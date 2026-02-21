@@ -234,3 +234,4 @@ At small scale, a single EC2 instance handles everything:
 - Do we want sound effects from day one, or add them as polish later? Add them as polish later
 - Should the court surface be configurable (grass/clay/hard) with visual-only differences, or skip that for MVP? Only clay for now
 - What's the minimum viable animation for player characters? (simple shape rotation vs. multi-frame sprites) multi-frame sprites
+6f86ed3f-e75d-45a2-b72c-da8b252fefbf

@@ -12,9 +12,8 @@ export class Player {
   canHit = true;
 
   private swingTimer = 0;
-  private frameIndex = 0;
-  private frameTimer = 0;
-  private readonly FRAME_DURATION = 100;
+  private bounceTimer = 0;
+  private idleTimer = 0;
 
   constructor(side: PlayerSide) {
     this.side = side;
@@ -23,6 +22,9 @@ export class Player {
   }
 
   update(dt: number, input: PlayerInput): void {
+    // Always tick idle timer for breathing animation
+    this.idleTimer += dt;
+
     if (this.swingTimer > 0) {
       this.swingTimer -= dt;
       if (this.swingTimer <= 0) {
@@ -42,15 +44,22 @@ export class Player {
 
     if (Math.abs(input.moveX) > 0.1 || Math.abs(input.moveY) > 0.1) {
       this.animation = AnimationState.Running;
-      this.frameTimer += dt * 1000;
-      if (this.frameTimer >= this.FRAME_DURATION) {
-        this.frameTimer = 0;
-        this.frameIndex = (this.frameIndex + 1) % 4;
-      }
+      this.bounceTimer += dt * 8;
     } else {
       this.animation = AnimationState.Idle;
-      this.frameIndex = 0;
-      this.frameTimer = 0;
+      this.bounceTimer = 0;
+    }
+  }
+
+  /** Tick only the animation timer (used during phases where movement is locked) */
+  tickAnimation(dt: number): void {
+    this.idleTimer += dt;
+    if (this.swingTimer > 0) {
+      this.swingTimer -= dt;
+      if (this.swingTimer <= 0) {
+        this.animation = AnimationState.Idle;
+        this.canHit = true;
+      }
     }
   }
 
@@ -72,6 +81,7 @@ export class Player {
     this.animation = AnimationState.Idle;
     this.canHit = true;
     this.swingTimer = 0;
+    this.bounceTimer = 0;
   }
 
   render(): void {
@@ -83,9 +93,14 @@ export class Player {
 
     const w = RENDER.PLAYER_WIDTH;
     const h = RENDER.PLAYER_HEIGHT;
-    const bounceOffset = this.animation === AnimationState.Running
-      ? Math.sin(this.frameIndex * Math.PI / 2) * 2
-      : 0;
+
+    // Idle breathing + running bounce
+    let bounceOffset = 0;
+    if (this.animation === AnimationState.Running) {
+      bounceOffset = Math.abs(Math.sin(this.bounceTimer)) * 3;
+    } else if (this.animation === AnimationState.Idle) {
+      bounceOffset = Math.sin(this.idleTimer * 2) * 1; // subtle breathing
+    }
 
     // Shadow
     g.ellipse(screen.x, screen.y + 2, w * 0.4, w * 0.2);
@@ -99,20 +114,37 @@ export class Player {
     g.circle(screen.x, screen.y - h * 0.7 - bounceOffset, w * 0.2);
     g.fill(0xFFDBB4);
 
-    // Racket arm
-    if (this.animation === AnimationState.Swinging || this.animation === AnimationState.Serving) {
-      const racketExtend = this.animation === AnimationState.Serving ? -12 : 10;
-      const racketY = this.animation === AnimationState.Serving
-        ? screen.y - h * 0.9 - bounceOffset
-        : screen.y - h * 0.4 - bounceOffset;
+    // Racket - always visible with different positions per state
+    let racketExtendX: number;
+    let racketY: number;
 
-      g.moveTo(screen.x, screen.y - h * 0.4 - bounceOffset);
-      g.lineTo(screen.x + racketExtend, racketY);
-      g.stroke({ width: 2, color: 0xFFDBB4 });
-
-      g.circle(screen.x + racketExtend, racketY, 5);
-      g.stroke({ width: 2, color: 0x8B4513 });
+    switch (this.animation) {
+      case AnimationState.Serving:
+        racketExtendX = 0;
+        racketY = screen.y - h * 0.95 - bounceOffset;
+        break;
+      case AnimationState.Swinging:
+        racketExtendX = 10;
+        racketY = screen.y - h * 0.4 - bounceOffset;
+        break;
+      case AnimationState.Running:
+        racketExtendX = 7;
+        racketY = screen.y - h * 0.35 - bounceOffset;
+        break;
+      default: // Idle
+        racketExtendX = 6;
+        racketY = screen.y - h * 0.3 - bounceOffset;
+        break;
     }
+
+    // Arm
+    g.moveTo(screen.x, screen.y - h * 0.4 - bounceOffset);
+    g.lineTo(screen.x + racketExtendX, racketY);
+    g.stroke({ width: 2, color: 0xFFDBB4 });
+
+    // Racket head
+    g.circle(screen.x + racketExtendX, racketY, 5);
+    g.stroke({ width: 2, color: 0x8B4513 });
 
     this.container.addChild(g);
   }

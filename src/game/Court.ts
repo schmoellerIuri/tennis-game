@@ -24,15 +24,23 @@ export class Court {
     const g = new Graphics();
     const hw = COURT.SINGLES_WIDTH / 2;
     const hl = COURT.HALF_LENGTH;
-    const margin = 3;
+    const margin = 7;
 
-    const tl = this.worldPoint(-hw - margin, -hl - margin);
-    const tr = this.worldPoint(hw + margin, -hl - margin);
-    const br = this.worldPoint(hw + margin, hl + margin);
-    const bl = this.worldPoint(-hw - margin, hl + margin);
-
-    g.poly([tl.x, tl.y, tr.x, tr.y, br.x, br.y, bl.x, bl.y]);
+    // Outer clay (run-off area)
+    const otl = this.worldPoint(-hw - margin, -hl - margin);
+    const otr = this.worldPoint(hw + margin, -hl - margin);
+    const obr = this.worldPoint(hw + margin, hl + margin);
+    const obl = this.worldPoint(-hw - margin, hl + margin);
+    g.poly([otl.x, otl.y, otr.x, otr.y, obr.x, obr.y, obl.x, obl.y]);
     g.fill(RENDER.COLORS.CLAY);
+
+    // Inner court surface (lighter)
+    const itl = this.worldPoint(-hw, -hl);
+    const itr = this.worldPoint(hw, -hl);
+    const ibr = this.worldPoint(hw, hl);
+    const ibl = this.worldPoint(-hw, hl);
+    g.poly([itl.x, itl.y, itr.x, itr.y, ibr.x, ibr.y, ibl.x, ibl.y]);
+    g.fill(RENDER.COLORS.CLAY_LIGHT);
 
     this.container.addChild(g);
   }

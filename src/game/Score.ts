@@ -10,7 +10,7 @@ export class Score {
       points: [0, 0],
       games: [[], []],
       sets: [0, 0],
-      servingSide: PlayerSide.Near,
+      servingSide: Math.random() < 0.5 ? PlayerSide.Near : PlayerSide.Far,
       currentSet: 0,
       isDeuce: false,
       advantage: null,

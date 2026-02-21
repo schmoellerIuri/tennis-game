@@ -29,6 +29,7 @@ export enum Difficulty {
 }
 
 export enum GamePhase {
+  Countdown = 'countdown',
   Serving = 'serving',
   Rally = 'rally',
   PointOver = 'point_over',

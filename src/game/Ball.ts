@@ -15,6 +15,10 @@ export class Ball {
     bounceCount: 0,
   };
 
+  private trail: Vec3[] = [];
+  private prevY = 0;
+  private lastBouncePos: Vec3 = { x: 0, y: 0, z: 0 };
+
   reset(side: PlayerSide): void {
     const y = side === PlayerSide.Near ? COURT.HALF_LENGTH - 2 : -COURT.HALF_LENGTH + 2;
     this.state = {
@@ -25,9 +29,12 @@ export class Ball {
       hasBounced: false,
       bounceCount: 0,
     };
+    this.trail = [];
+    this.prevY = y;
+    this.lastBouncePos = { x: 0, y: 0, z: 0 };
   }
 
-  hit(targetX: number, targetY: number, speed: number, lobHeight: number, hitter: PlayerSide): void {
+  hit(targetX: number, targetY: number, speed: number, _lobHeight: number, hitter: PlayerSide): void {
     const dx = targetX - this.state.position.x;
     const dy = targetY - this.state.position.y;
     const dist = Math.sqrt(dx * dx + dy * dy);
@@ -37,13 +44,28 @@ export class Ball {
     const flightTime = dist / speed;
     const vx = dx / flightTime;
     const vy = dy / flightTime;
-    const vz = (lobHeight - this.state.position.z + 0.5 * GAME.GRAVITY * flightTime * flightTime) / flightTime;
+
+    // Compute vz so ball lands at z=0 at the target position
+    let vz = (0.5 * GAME.GRAVITY * flightTime * flightTime - this.state.position.z) / flightTime;
+
+    // Ensure ball clears the net (at y=0) with some margin
+    if (vy !== 0) {
+      const timeToNet = -this.state.position.y / vy;
+      if (timeToNet > 0 && timeToNet < flightTime) {
+        const zAtNet = this.state.position.z + vz * timeToNet - 0.5 * GAME.GRAVITY * timeToNet * timeToNet;
+        const minClearance = COURT.NET_HEIGHT + 0.3;
+        if (zAtNet < minClearance) {
+          vz = (minClearance - this.state.position.z + 0.5 * GAME.GRAVITY * timeToNet * timeToNet) / timeToNet;
+        }
+      }
+    }
 
     this.state.velocity = { x: vx, y: vy, z: vz };
     this.state.inPlay = true;
     this.state.lastHitBy = hitter;
     this.state.hasBounced = false;
     this.state.bounceCount = 0;
+    this.trail = [];
   }
 
   update(dt: number): void {
@@ -51,6 +73,12 @@ export class Ball {
 
     const pos = this.state.position;
     const vel = this.state.velocity;
+
+    this.prevY = pos.y;
+
+    // Store trail position
+    this.trail.push({ x: pos.x, y: pos.y, z: pos.z });
+    if (this.trail.length > 8) this.trail.shift();
 
     pos.x += vel.x * dt;
     pos.y += vel.y * dt;
@@ -65,21 +93,24 @@ export class Ball {
       vel.y *= 0.9;
       this.state.hasBounced = true;
       this.state.bounceCount++;
+      this.lastBouncePos = { x: pos.x, y: pos.y, z: 0 };
     }
   }
 
   isOut(): boolean {
-    const p = this.state.position;
+    if (!this.state.hasBounced) return false;
+    const p = this.lastBouncePos;
     const hw = COURT.SINGLES_WIDTH / 2;
     const hl = COURT.HALF_LENGTH;
-    return this.state.hasBounced && (
-      Math.abs(p.x) > hw + 0.1 || Math.abs(p.y) > hl + 0.1
-    );
+    return Math.abs(p.x) > hw + 0.3 || Math.abs(p.y) > hl + 0.3;
   }
 
   isNetHit(): boolean {
     const p = this.state.position;
-    return Math.abs(p.y) < 0.3 && p.z < COURT.NET_HEIGHT && this.state.inPlay;
+    // Wider zone + swept check: detect if ball crossed y=0 between frames
+    const crossedNet = (this.prevY > 0 && p.y < 0) || (this.prevY < 0 && p.y > 0);
+    const inNetZone = Math.abs(p.y) < 0.5;
+    return (inNetZone || crossedNet) && p.z < COURT.NET_HEIGHT && this.state.inPlay;
   }
 
   isDoubleBounce(): boolean {
@@ -88,7 +119,11 @@ export class Ball {
 
   getLandingSide(): PlayerSide | null {
     if (!this.state.hasBounced) return null;
-    return this.state.position.y > 0 ? PlayerSide.Near : PlayerSide.Far;
+    return this.lastBouncePos.y > 0 ? PlayerSide.Near : PlayerSide.Far;
+  }
+
+  getLastBouncePos(): Vec3 {
+    return this.lastBouncePos;
   }
 
   render(): void {
@@ -96,6 +131,17 @@ export class Ball {
     if (!this.state.inPlay && this.state.velocity.x === 0 && this.state.velocity.y === 0) return;
 
     const g = new Graphics();
+
+    // Trail
+    for (let i = 0; i < this.trail.length; i++) {
+      const t = this.trail[i];
+      const trailScreen = worldToScreen3D(t);
+      const alpha = (i / this.trail.length) * 0.3;
+      const radius = RENDER.BALL_VISUAL_RADIUS * (0.3 + (i / this.trail.length) * 0.5);
+      g.circle(trailScreen.x, trailScreen.y, radius);
+      g.fill({ color: RENDER.COLORS.BALL, alpha });
+    }
+
     const screen = worldToScreen3D(this.state.position);
     const shadow = getShadowPosition(this.state.position);
 

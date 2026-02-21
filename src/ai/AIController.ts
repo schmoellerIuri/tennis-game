@@ -64,32 +64,37 @@ export class AIController {
 
     if (ballInPlay && this.canHitBall(aiPosition, ballPosition) && this.shotCooldown <= 0) {
       shotType = Math.random() > 0.8 ? ShotType.Lob : ShotType.Normal;
-      shotPower = 0.5 + Math.random() * 0.5 * this.config.accuracy;
+      shotPower = 0.4 + Math.random() * 0.4 * this.config.accuracy;
       this.shotCooldown = 0.5;
     }
 
     return { moveX, moveY, aimAngle, shotType, shotPower };
   }
 
-  getServeInput(): PlayerInput {
-    const accuracy = this.config.accuracy;
-    const targetX = (Math.random() - 0.5) * COURT.SINGLES_WIDTH * accuracy;
-    const angle = Math.atan2(COURT.HALF_LENGTH, targetX);
+  getServeTarget(isDeuceSide: boolean): { targetX: number; targetY: number; power: number } {
+    const hw = COURT.SINGLES_WIDTH / 2;
+    const sl = COURT.SERVICE_LINE_DIST;
 
-    return {
-      moveX: 0,
-      moveY: 0,
-      aimAngle: angle,
-      shotType: ShotType.Normal,
-      shotPower: 0.6 + Math.random() * 0.3,
-    };
+    // Far player serves toward +y, targets Near service box [0, sl]
+    // Cross-court: deuce side (Far right = -x) → target +x half; ad side (+x) → target -x half
+    let targetX: number;
+    if (isDeuceSide) {
+      targetX = (0.2 + Math.random() * 0.5) * hw * this.config.accuracy;
+    } else {
+      targetX = -(0.2 + Math.random() * 0.5) * hw * this.config.accuracy;
+    }
+
+    const targetY = sl * (0.3 + Math.random() * 0.5);
+    const power = 0.5 + Math.random() * 0.3;
+
+    return { targetX, targetY, power };
   }
 
   private predictLanding(pos: Vec3, vel: Vec3): Vec2 {
     let px = pos.x;
     let py = pos.y;
     let pz = pos.z;
-    let vx = vel.x;
+    const vx = vel.x;
     let vy = vel.y;
     let vz = vel.z;
     const dt = 1 / 30;
@@ -111,11 +116,10 @@ export class AIController {
   private canHitBall(aiPos: Vec2, ballPos: Vec3): boolean {
     const dx = aiPos.x - ballPos.x;
     const dy = aiPos.y - ballPos.y;
-    return Math.sqrt(dx * dx + dy * dy) < GAME.PLAYER_HIT_RADIUS && ballPos.z < 2;
+    return Math.sqrt(dx * dx + dy * dy) < GAME.PLAYER_HIT_RADIUS && ballPos.z <= 2.5;
   }
 
   private calculateAimAngle(aiPos: Vec2): number {
-    const spread = (1 - this.config.accuracy) * 2;
     const targetX = (Math.random() - 0.5) * COURT.SINGLES_WIDTH * this.config.accuracy;
     const targetY = COURT.HALF_LENGTH - 1;
 
