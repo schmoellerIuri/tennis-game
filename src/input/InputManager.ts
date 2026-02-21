@@ -70,7 +70,7 @@ export class InputManager {
     if (this.rightMousePressed) shotType = ShotType.Lob;
 
     const distToMouse = Math.sqrt(dx * dx + dy * dy);
-    const shotPower = Math.min(1, distToMouse / 300);
+    const shotPower = Math.min(1, distToMouse / 150);
 
     this.mousePressed = false;
     this.rightMousePressed = false;
