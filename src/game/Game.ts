@@ -130,11 +130,9 @@ export class Game {
 
       if (input.shotType !== null && !this.hasServed) {
         this.hasServed = true;
-        // Convert screen aim to world direction
-        const worldAim = screenToWorld(Math.cos(input.aimAngle), Math.sin(input.aimAngle));
-        const aimLen = Math.sqrt(worldAim.x * worldAim.x + worldAim.y * worldAim.y);
-        const worldAimX = aimLen > 0.001 ? worldAim.x / aimLen : 0;
-        const targetX = worldAimX * COURT.SINGLES_WIDTH * 0.4;
+        const mouse = this.input.getMousePosition();
+        const worldTarget = screenToWorld(mouse.x - this.centerX, mouse.y - this.centerY);
+        const targetX = worldTarget.x;
         const targetY = -(COURT.SERVICE_LINE_DIST * 0.3 + input.shotPower * COURT.SERVICE_LINE_DIST * 0.5);
         this.executeServe(PlayerSide.Near, targetX, targetY, input.shotPower);
       }
@@ -299,19 +297,18 @@ export class Game {
 
     const direction = player.side === PlayerSide.Near ? -1 : 1;
 
-    // Convert screen aim to world direction for human player
+    // Determine horizontal target from mouse world position (human) or aim angle (AI)
     let targetX: number;
     if (player.side === PlayerSide.Near) {
-      const worldAim = screenToWorld(Math.cos(aimAngle), Math.sin(aimAngle));
-      const aimLen = Math.sqrt(worldAim.x * worldAim.x + worldAim.y * worldAim.y);
-      targetX = aimLen > 0.001 ? (worldAim.x / aimLen) * COURT.SINGLES_WIDTH * 0.4 : 0;
+      const mouse = this.input.getMousePosition();
+      const worldTarget = screenToWorld(mouse.x - this.centerX, mouse.y - this.centerY);
+      targetX = worldTarget.x;
     } else {
-      // AI uses aimAngle computed in world space already
       targetX = Math.cos(aimAngle) * COURT.SINGLES_WIDTH * 0.4;
     }
 
-    // Wider depth range: short shots at low power, deep at high power
-    const targetY = direction * (COURT.HALF_LENGTH * 0.4 + power * COURT.HALF_LENGTH * 0.5);
+    // Depth: power controls how deep — high power can overshoot the baseline
+    const targetY = direction * (COURT.HALF_LENGTH * 0.3 + power * COURT.HALF_LENGTH * 0.9);
 
     this.ball.hit(targetX, targetY, speed * (0.8 + power * 0.2), lobHeight, player.side);
   }
@@ -495,7 +492,7 @@ export class Game {
     const dx = endX - startX;
     const dy = endY - startY;
     const dist = Math.sqrt(dx * dx + dy * dy);
-    const power = Math.min(1, dist / 300);
+    const power = Math.min(1, dist / 150);
 
     let color: number;
     if (power < 0.5) {
