@@ -1,4 +1,4 @@
-import { Difficulty, PlayerInput, PlayerSide, ShotType, Vec2, Vec3 } from '@/types';
+import { Difficulty, PlayerInput, Vec2, Vec3 } from '@/types';
 import { COURT, GAME } from '@/utils/Constants';
 
 interface AIConfig {
@@ -58,25 +58,23 @@ export class AIController {
       moveY = (dy / dist) * speed;
     }
 
-    let shotType: ShotType | null = null;
+    let shotRequested = false;
     let shotPower = 0.7;
-    const aimAngle = this.calculateAimAngle(aiPosition);
+    const aimDirection = this.calculateAimDirection(aiPosition);
 
     if (ballInPlay && this.canHitBall(aiPosition, ballPosition) && this.shotCooldown <= 0) {
-      shotType = Math.random() > 0.8 ? ShotType.Lob : ShotType.Normal;
+      shotRequested = true;
       shotPower = 0.4 + Math.random() * 0.4 * this.config.accuracy;
       this.shotCooldown = 0.5;
     }
 
-    return { moveX, moveY, aimAngle, shotType, shotPower };
+    return { moveX, moveY, shotRequested, shotPower, aimDirection, isCharging: false };
   }
 
   getServeTarget(isDeuceSide: boolean): { targetX: number; targetY: number; power: number } {
     const hw = COURT.SINGLES_WIDTH / 2;
     const sl = COURT.SERVICE_LINE_DIST;
 
-    // Far player serves toward +y, targets Near service box [0, sl]
-    // Cross-court: deuce side (Far right = -x) → target +x half; ad side (+x) → target -x half
     let targetX: number;
     if (isDeuceSide) {
       targetX = (0.2 + Math.random() * 0.5) * hw * this.config.accuracy;
@@ -95,7 +93,7 @@ export class AIController {
     let py = pos.y;
     let pz = pos.z;
     const vx = vel.x;
-    let vy = vel.y;
+    const vy = vel.y;
     let vz = vel.z;
     const dt = 1 / 30;
 
@@ -119,10 +117,15 @@ export class AIController {
     return Math.sqrt(dx * dx + dy * dy) < GAME.PLAYER_HIT_RADIUS && ballPos.z <= 2.5;
   }
 
-  private calculateAimAngle(aiPos: Vec2): number {
+  private calculateAimDirection(aiPos: Vec2): Vec2 {
     const targetX = (Math.random() - 0.5) * COURT.SINGLES_WIDTH * this.config.accuracy;
     const targetY = COURT.HALF_LENGTH - 1;
 
-    return Math.atan2(targetY - aiPos.y, targetX - aiPos.x);
+    const dx = targetX - aiPos.x;
+    const dy = targetY - aiPos.y;
+    const len = Math.sqrt(dx * dx + dy * dy);
+
+    if (len < 0.01) return { x: 0, y: 1 };
+    return { x: dx / len, y: dy / len };
   }
 }

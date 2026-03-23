@@ -12,14 +12,10 @@ export interface Vec3 {
 export interface PlayerInput {
   moveX: number;
   moveY: number;
-  aimAngle: number;
-  shotType: ShotType | null;
+  shotRequested: boolean;
   shotPower: number;
-}
-
-export enum ShotType {
-  Normal = 'normal',
-  Lob = 'lob',
+  aimDirection: Vec2;
+  isCharging: boolean;
 }
 
 export enum Difficulty {
@@ -44,8 +40,15 @@ export enum PlayerSide {
 export enum AnimationState {
   Idle = 'idle',
   Running = 'running',
+  Preparing = 'preparing',
   Swinging = 'swinging',
   Serving = 'serving',
+}
+
+export enum ServePhase {
+  WaitingForToss = 'waiting_for_toss',
+  BallRising = 'ball_rising',
+  WaitingForHit = 'waiting_for_hit',
 }
 
 export interface MatchConfig {

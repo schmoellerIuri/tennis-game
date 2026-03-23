@@ -1,10 +1,10 @@
-import { Container, Graphics } from 'pixi.js';
+import * as THREE from 'three';
 import { BallState, PlayerSide, Vec3 } from '@/types';
-import { COURT, GAME, RENDER } from '@/utils/Constants';
-import { getShadowPosition, worldToScreen3D } from '@/utils/IsometricUtils';
+import { COURT, GAME, RENDER_3D } from '@/utils/Constants';
 
 export class Ball {
-  readonly container = new Container();
+  readonly mesh: THREE.Mesh;
+  private readonly shadowMesh: THREE.Mesh;
 
   state: BallState = {
     position: { x: 0, y: 0, z: 1 },
@@ -15,9 +15,29 @@ export class Ball {
     bounceCount: 0,
   };
 
-  private trail: Vec3[] = [];
   private prevY = 0;
   private lastBouncePos: Vec3 = { x: 0, y: 0, z: 0 };
+
+  constructor(scene: THREE.Scene) {
+    // Ball mesh
+    const geo = new THREE.SphereGeometry(RENDER_3D.BALL_VISUAL_RADIUS, 16, 16);
+    const mat = new THREE.MeshLambertMaterial({ color: RENDER_3D.COLORS.BALL });
+    this.mesh = new THREE.Mesh(geo, mat);
+    this.mesh.castShadow = true;
+    scene.add(this.mesh);
+
+    // Shadow on ground
+    const shadowGeo = new THREE.CircleGeometry(0.15, 16);
+    const shadowMat = new THREE.MeshBasicMaterial({
+      color: 0x000000,
+      transparent: true,
+      opacity: 0.3,
+    });
+    this.shadowMesh = new THREE.Mesh(shadowGeo, shadowMat);
+    this.shadowMesh.rotation.x = -Math.PI / 2;
+    this.shadowMesh.position.y = 0.005;
+    scene.add(this.shadowMesh);
+  }
 
   reset(side: PlayerSide): void {
     const y = side === PlayerSide.Near ? COURT.HALF_LENGTH - 2 : -COURT.HALF_LENGTH + 2;
@@ -29,7 +49,6 @@ export class Ball {
       hasBounced: false,
       bounceCount: 0,
     };
-    this.trail = [];
     this.prevY = y;
     this.lastBouncePos = { x: 0, y: 0, z: 0 };
   }
@@ -65,7 +84,6 @@ export class Ball {
     this.state.lastHitBy = hitter;
     this.state.hasBounced = false;
     this.state.bounceCount = 0;
-    this.trail = [];
   }
 
   update(dt: number): void {
@@ -75,10 +93,6 @@ export class Ball {
     const vel = this.state.velocity;
 
     this.prevY = pos.y;
-
-    // Store trail position
-    this.trail.push({ x: pos.x, y: pos.y, z: pos.z });
-    if (this.trail.length > 8) this.trail.shift();
 
     pos.x += vel.x * dt;
     pos.y += vel.y * dt;
@@ -97,6 +111,26 @@ export class Ball {
     }
   }
 
+  /** Sync Three.js mesh positions with physics state. y↔z swap happens here. */
+  updateVisuals(): void {
+    const pos = this.state.position;
+    // Game coords: x=across, y=along court, z=height
+    // Three.js: x=across, y=height, z=along court
+    this.mesh.position.set(pos.x, pos.z, pos.y);
+
+    const visible = this.state.inPlay || (this.state.velocity.x !== 0 || this.state.velocity.y !== 0);
+    this.mesh.visible = visible;
+    this.shadowMesh.visible = visible;
+
+    if (visible) {
+      // Shadow on ground directly below ball
+      this.shadowMesh.position.set(pos.x, 0.005, pos.y);
+      const shadowScale = Math.max(0.3, 1 - pos.z * 0.15);
+      this.shadowMesh.scale.set(shadowScale, shadowScale, shadowScale);
+      (this.shadowMesh.material as THREE.MeshBasicMaterial).opacity = 0.3 * shadowScale;
+    }
+  }
+
   isOut(): boolean {
     if (!this.state.hasBounced) return false;
     const p = this.lastBouncePos;
@@ -107,7 +141,6 @@ export class Ball {
 
   isNetHit(): boolean {
     const p = this.state.position;
-    // Wider zone + swept check: detect if ball crossed y=0 between frames
     const crossedNet = (this.prevY > 0 && p.y < 0) || (this.prevY < 0 && p.y > 0);
     const inNetZone = Math.abs(p.y) < 0.5;
     return (inNetZone || crossedNet) && p.z < COURT.NET_HEIGHT && this.state.inPlay;
@@ -124,36 +157,5 @@ export class Ball {
 
   getLastBouncePos(): Vec3 {
     return this.lastBouncePos;
-  }
-
-  render(): void {
-    this.container.removeChildren();
-    if (!this.state.inPlay && this.state.velocity.x === 0 && this.state.velocity.y === 0) return;
-
-    const g = new Graphics();
-
-    // Trail
-    for (let i = 0; i < this.trail.length; i++) {
-      const t = this.trail[i];
-      const trailScreen = worldToScreen3D(t);
-      const alpha = (i / this.trail.length) * 0.3;
-      const radius = RENDER.BALL_VISUAL_RADIUS * (0.3 + (i / this.trail.length) * 0.5);
-      g.circle(trailScreen.x, trailScreen.y, radius);
-      g.fill({ color: RENDER.COLORS.BALL, alpha });
-    }
-
-    const screen = worldToScreen3D(this.state.position);
-    const shadow = getShadowPosition(this.state.position);
-
-    // Shadow
-    const shadowScale = Math.max(0.3, 1 - this.state.position.z * 0.15);
-    g.ellipse(shadow.x, shadow.y, RENDER.BALL_VISUAL_RADIUS * shadowScale, RENDER.BALL_VISUAL_RADIUS * shadowScale * 0.5);
-    g.fill({ color: RENDER.COLORS.BALL_SHADOW, alpha: 0.3 * shadowScale });
-
-    // Ball
-    g.circle(screen.x, screen.y, RENDER.BALL_VISUAL_RADIUS);
-    g.fill(RENDER.COLORS.BALL);
-
-    this.container.addChild(g);
   }
 }
