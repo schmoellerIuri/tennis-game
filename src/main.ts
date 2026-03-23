@@ -1,67 +1,138 @@
-import { Application, Ticker } from 'pixi.js';
-import { Difficulty, MatchStats, PlayerSide } from '@/types';
-import { RENDER } from '@/utils/Constants';
+import * as THREE from 'three';
+import { Difficulty, PlayerSide, MatchStats } from '@/types';
+import { RENDER_3D } from '@/utils/Constants';
+import { Game } from '@/game/Game';
 import { InputManager } from '@/input/InputManager';
-import { MenuScene } from '@/scenes/MenuScene';
-import { MatchScene } from '@/scenes/MatchScene';
-import { ResultScene } from '@/scenes/ResultScene';
+import { UIManager } from '@/ui/UIManager';
 
-async function bootstrap(): Promise<void> {
-  const app = new Application();
+type AppState = 'menu' | 'playing' | 'result';
 
-  await app.init({
-    background: RENDER.COLORS.BACKGROUND,
-    resizeTo: window,
-    antialias: true,
-    resolution: window.devicePixelRatio || 1,
-    autoDensity: true,
-  });
+let appState: AppState = 'menu';
+let game: Game | null = null;
+let prevTime = 0;
 
-  document.body.appendChild(app.canvas);
+// ---- Three.js Setup ----
+const container = document.getElementById('game-container')!;
 
-  const input = new InputManager();
-  input.bind(app.canvas as HTMLCanvasElement);
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setPixelRatio(window.devicePixelRatio);
+renderer.setSize(window.innerWidth, window.innerHeight);
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+container.insertBefore(renderer.domElement, container.firstChild);
 
-  let currentScene: { update?: (dt: number) => void } | null = null;
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(RENDER_3D.COLORS.SKY);
 
-  function showMenu(): void {
-    app.stage.removeChildren();
-    const menu = new MenuScene(app.screen.width, app.screen.height);
-    menu.setOnStart((difficulty, sets) => startMatch(difficulty, sets));
-    app.stage.addChild(menu.container);
-    currentScene = null;
+const camera = new THREE.PerspectiveCamera(
+  RENDER_3D.CAMERA_FOV,
+  window.innerWidth / window.innerHeight,
+  RENDER_3D.CAMERA_NEAR,
+  RENDER_3D.CAMERA_FAR,
+);
+camera.position.set(0, RENDER_3D.CAMERA_HEIGHT, RENDER_3D.CAMERA_DISTANCE + 13);
+camera.lookAt(0, 1, 0);
+
+// Lights
+const ambient = new THREE.AmbientLight(0xffffff, 0.6);
+scene.add(ambient);
+
+const directional = new THREE.DirectionalLight(0xffffff, 0.8);
+directional.position.set(5, 15, 10);
+directional.castShadow = true;
+directional.shadow.mapSize.width = 2048;
+directional.shadow.mapSize.height = 2048;
+directional.shadow.camera.near = 0.5;
+directional.shadow.camera.far = 50;
+directional.shadow.camera.left = -20;
+directional.shadow.camera.right = 20;
+directional.shadow.camera.top = 20;
+directional.shadow.camera.bottom = -20;
+scene.add(directional);
+
+// ---- Input + UI ----
+const inputManager = new InputManager();
+const ui = new UIManager();
+
+// ---- App State Machine ----
+ui.setOnPlay((difficulty: Difficulty, sets: number) => {
+  startMatch(difficulty, sets);
+});
+
+ui.setOnBackToMenu(() => {
+  goToMenu();
+});
+
+function startMatch(difficulty: Difficulty, sets: number): void {
+  // Clean up previous game objects from scene
+  if (game) {
+    game.destroy();
+    game = null;
   }
 
-  function startMatch(difficulty: Difficulty, sets: number): void {
-    app.stage.removeChildren();
-    const match = new MatchScene(
-      input,
-      difficulty,
-      sets,
-      app.screen.width,
-      app.screen.height,
-    );
-    match.setOnMatchEnd((winner, stats) => showResult(winner, stats));
-    app.stage.addChild(match.container);
-    currentScene = match;
-  }
-
-  function showResult(winner: PlayerSide, stats: MatchStats): void {
-    app.stage.removeChildren();
-    const result = new ResultScene(winner, stats, app.screen.width, app.screen.height);
-    result.setOnBack(() => showMenu());
-    app.stage.addChild(result.container);
-    currentScene = null;
-  }
-
-  app.ticker.add((ticker: Ticker) => {
-    const dt = ticker.deltaMS / 1000;
-    if (currentScene?.update) {
-      currentScene.update(dt);
+  // Remove all non-light objects (court, players, ball from previous game)
+  const toRemove: THREE.Object3D[] = [];
+  scene.traverse((obj) => {
+    if (obj !== scene && !(obj instanceof THREE.Light)) {
+      if (obj.parent === scene) toRemove.push(obj);
     }
   });
+  toRemove.forEach(obj => scene.remove(obj));
 
-  showMenu();
+  game = new Game(scene, camera, inputManager, ui, difficulty, sets);
+  game.setOnMatchEnd(onMatchEnd);
+  inputManager.setEnabled(true);
+  appState = 'playing';
+  ui.showHUD();
 }
 
-bootstrap().catch(console.error);
+function onMatchEnd(winner: PlayerSide, stats: MatchStats): void {
+  appState = 'result';
+  inputManager.setEnabled(false);
+  ui.showResult(winner, stats);
+}
+
+function goToMenu(): void {
+  if (game) {
+    game.destroy();
+    game = null;
+  }
+
+  // Clean scene
+  const toRemove: THREE.Object3D[] = [];
+  scene.traverse((obj) => {
+    if (obj !== scene && !(obj instanceof THREE.Light)) {
+      if (obj.parent === scene) toRemove.push(obj);
+    }
+  });
+  toRemove.forEach(obj => scene.remove(obj));
+
+  appState = 'menu';
+  inputManager.setEnabled(false);
+  ui.showMenu();
+}
+
+// ---- Animation Loop ----
+function animate(time: number): void {
+  requestAnimationFrame(animate);
+
+  const dt = Math.min((time - prevTime) / 1000, 0.05); // cap at 50ms
+  prevTime = time;
+
+  if (appState === 'playing' && game) {
+    game.update(dt);
+  }
+
+  renderer.render(scene, camera);
+}
+
+// ---- Window Resize ----
+window.addEventListener('resize', () => {
+  camera.aspect = window.innerWidth / window.innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(window.innerWidth, window.innerHeight);
+});
+
+// ---- Start ----
+ui.showMenu();
+requestAnimationFrame(animate);

@@ -1,58 +1,63 @@
-import { PlayerInput, ShotType } from '@/types';
+import { PlayerInput, Vec2 } from '@/types';
+import { INPUT } from '@/utils/Constants';
 
 export class InputManager {
-  private keys = new Set<string>();
-  private mouseX = 0;
-  private mouseY = 0;
-  private mouseDown = false;
-  private rightMouseDown = false;
-  private mousePressed = false;
-  private rightMousePressed = false;
-  private canvas: HTMLCanvasElement | null = null;
+  private keys: Record<string, boolean> = {};
+  private spaceHeld = false;
+  private spaceHeldTime = 0;
+  private spaceJustReleased = false;
+  private lastMoveDirection: Vec2 = { x: 0, y: -1 }; // Default: forward (toward opponent)
 
-  bind(canvas: HTMLCanvasElement): void {
-    this.canvas = canvas;
+  private enabled = true;
 
-    window.addEventListener('keydown', (e) => {
-      this.keys.add(e.code);
-    });
-
-    window.addEventListener('keyup', (e) => {
-      this.keys.delete(e.code);
-    });
-
-    canvas.addEventListener('mousemove', (e) => {
-      this.mouseX = e.clientX;
-      this.mouseY = e.clientY;
-    });
-
-    canvas.addEventListener('mousedown', (e) => {
-      if (e.button === 0) {
-        this.mouseDown = true;
-        this.mousePressed = true;
-      }
-      if (e.button === 2) {
-        this.rightMouseDown = true;
-        this.rightMousePressed = true;
-      }
-    });
-
-    canvas.addEventListener('mouseup', (e) => {
-      if (e.button === 0) this.mouseDown = false;
-      if (e.button === 2) this.rightMouseDown = false;
-    });
-
-    canvas.addEventListener('contextmenu', (e) => e.preventDefault());
+  constructor() {
+    window.addEventListener('keydown', this.onKeyDown.bind(this));
+    window.addEventListener('keyup', this.onKeyUp.bind(this));
   }
 
-  getInput(playerScreenX: number, playerScreenY: number): PlayerInput {
+  private onKeyDown(e: KeyboardEvent): void {
+    if (!this.enabled) return;
+    this.keys[e.code] = true;
+
+    if (e.code === 'Space') {
+      e.preventDefault();
+      if (!this.spaceHeld) {
+        this.spaceHeld = true;
+        this.spaceHeldTime = 0;
+      }
+    }
+  }
+
+  private onKeyUp(e: KeyboardEvent): void {
+    this.keys[e.code] = false;
+
+    if (e.code === 'Space') {
+      e.preventDefault();
+      if (this.spaceHeld) {
+        this.spaceJustReleased = true;
+        this.spaceHeld = false;
+      }
+    }
+  }
+
+  setEnabled(enabled: boolean): void {
+    this.enabled = enabled;
+    if (!enabled) {
+      this.keys = {};
+      this.spaceHeld = false;
+      this.spaceHeldTime = 0;
+      this.spaceJustReleased = false;
+    }
+  }
+
+  update(dt: number): PlayerInput {
     let moveX = 0;
     let moveY = 0;
 
-    if (this.keys.has('KeyW') || this.keys.has('ArrowUp')) moveY = -1;
-    if (this.keys.has('KeyS') || this.keys.has('ArrowDown')) moveY = 1;
-    if (this.keys.has('KeyA') || this.keys.has('ArrowLeft')) moveX = -1;
-    if (this.keys.has('KeyD') || this.keys.has('ArrowRight')) moveX = 1;
+    if (this.keys['KeyA'] || this.keys['ArrowLeft']) moveX = -1;
+    if (this.keys['KeyD'] || this.keys['ArrowRight']) moveX = 1;
+    if (this.keys['KeyW'] || this.keys['ArrowUp']) moveY = -1;
+    if (this.keys['KeyS'] || this.keys['ArrowDown']) moveY = 1;
 
     // Normalize diagonal
     if (moveX !== 0 && moveY !== 0) {
@@ -61,28 +66,60 @@ export class InputManager {
       moveY /= len;
     }
 
-    const dx = this.mouseX - playerScreenX;
-    const dy = this.mouseY - playerScreenY;
-    const aimAngle = Math.atan2(dy, dx);
+    // Update last move direction when WASD is pressed
+    if (moveX !== 0 || moveY !== 0) {
+      const len = Math.sqrt(moveX * moveX + moveY * moveY);
+      this.lastMoveDirection = { x: moveX / len, y: moveY / len };
+    }
 
-    let shotType: ShotType | null = null;
-    if (this.mousePressed) shotType = ShotType.Normal;
-    if (this.rightMousePressed) shotType = ShotType.Lob;
+    // Charge timing
+    if (this.spaceHeld) {
+      this.spaceHeldTime += dt;
+    }
 
-    const distToMouse = Math.sqrt(dx * dx + dy * dy);
-    const shotPower = Math.min(1, distToMouse / 150);
+    const shotRequested = this.spaceJustReleased;
+    const rawPower = Math.min(1, this.spaceHeldTime / INPUT.CHARGE_RATE);
+    const shotPower = shotRequested ? Math.max(INPUT.MIN_SHOT_POWER, rawPower) : 0;
 
-    this.mousePressed = false;
-    this.rightMousePressed = false;
+    const result: PlayerInput = {
+      moveX,
+      moveY,
+      shotRequested,
+      shotPower,
+      aimDirection: { ...this.lastMoveDirection },
+      isCharging: this.spaceHeld,
+    };
 
-    return { moveX, moveY, aimAngle, shotType, shotPower };
+    // Reset one-frame flag
+    if (this.spaceJustReleased) {
+      this.spaceJustReleased = false;
+      this.spaceHeldTime = 0;
+    }
+
+    return result;
   }
 
-  isKeyDown(code: string): boolean {
-    return this.keys.has(code);
+  /** Get whether space was just pressed this frame (for serve toss) */
+  isSpaceJustPressed(): boolean {
+    return this.spaceHeld && this.spaceHeldTime === 0;
   }
 
-  getMousePosition(): { x: number; y: number } {
-    return { x: this.mouseX, y: this.mouseY };
+  /** Check if space is currently held */
+  isSpaceHeld(): boolean {
+    return this.spaceHeld;
+  }
+
+  /** Get current charge power without consuming it */
+  getCurrentChargePower(): number {
+    return Math.min(1, Math.max(INPUT.MIN_SHOT_POWER, this.spaceHeldTime / INPUT.CHARGE_RATE));
+  }
+
+  getLastMoveDirection(): Vec2 {
+    return { ...this.lastMoveDirection };
+  }
+
+  destroy(): void {
+    window.removeEventListener('keydown', this.onKeyDown.bind(this));
+    window.removeEventListener('keyup', this.onKeyUp.bind(this));
   }
 }

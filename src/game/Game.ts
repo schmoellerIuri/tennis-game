@@ -1,32 +1,32 @@
-import { Container, Graphics, Text, TextStyle } from 'pixi.js';
-import { GamePhase, MatchStats, PlayerSide, ShotType, Difficulty } from '@/types';
-import { COURT, GAME, RENDER } from '@/utils/Constants';
-import { worldToScreen, screenToWorld } from '@/utils/IsometricUtils';
+import * as THREE from 'three';
+import { GamePhase, MatchStats, PlayerSide, Difficulty, PlayerInput, ServePhase, Vec2 } from '@/types';
+import { COURT, GAME, INPUT } from '@/utils/Constants';
 import { Court } from './Court';
 import { Player } from './Player';
 import { Ball } from './Ball';
 import { Score } from './Score';
-import { InputManager } from '@/input/InputManager';
 import { AIController } from '@/ai/AIController';
+import { InputManager } from '@/input/InputManager';
+import { UIManager } from '@/ui/UIManager';
 
 export class Game {
-  readonly container = new Container();
+  private readonly scene: THREE.Scene;
+  private readonly camera: THREE.PerspectiveCamera;
   private readonly court: Court;
   private readonly playerNear: Player;
   private readonly playerFar: Player;
   private readonly ball: Ball;
   private readonly score: Score;
-  private readonly input: InputManager;
   private readonly ai: AIController;
-  private readonly scoreDisplay: Container;
+  private readonly inputManager: InputManager;
+  private readonly ui: UIManager;
 
+  // Game state
   private phase: GamePhase = GamePhase.Countdown;
   private pauseTimer = 2;
   private accumulator = 0;
   private hasServed = false;
   private stats: MatchStats = { aces: 0, winners: 0, unforcedErrors: 0, totalPoints: 0 };
-  private centerX = 0;
-  private centerY = 0;
   private onMatchEnd: ((winner: PlayerSide, stats: MatchStats) => void) | null = null;
 
   // Tennis serve state
@@ -38,21 +38,29 @@ export class Game {
   private rallyHitCount = 0;
   private aiServeDelay = 0;
 
-  constructor(input: InputManager, difficulty: Difficulty, sets: number = 1) {
-    this.court = new Court();
-    this.playerNear = new Player(PlayerSide.Near);
-    this.playerFar = new Player(PlayerSide.Far);
-    this.ball = new Ball();
-    this.score = new Score(sets);
-    this.input = input;
-    this.ai = new AIController(difficulty);
-    this.scoreDisplay = new Container();
+  // New serve mechanic
+  private servePhase: ServePhase = ServePhase.WaitingForToss;
+  private spaceWasDown = false;
 
-    this.container.addChild(this.court.container);
-    this.container.addChild(this.playerFar.container);
-    this.container.addChild(this.ball.container);
-    this.container.addChild(this.playerNear.container);
-    this.container.addChild(this.scoreDisplay);
+  constructor(
+    scene: THREE.Scene,
+    camera: THREE.PerspectiveCamera,
+    inputManager: InputManager,
+    ui: UIManager,
+    difficulty: Difficulty,
+    sets: number = 1,
+  ) {
+    this.scene = scene;
+    this.camera = camera;
+    this.inputManager = inputManager;
+    this.ui = ui;
+
+    this.court = new Court(scene);
+    this.playerNear = new Player(scene, PlayerSide.Near);
+    this.playerFar = new Player(scene, PlayerSide.Far);
+    this.ball = new Ball(scene);
+    this.score = new Score(sets);
+    this.ai = new AIController(difficulty);
 
     this.ball.reset(this.score.state.servingSide);
     this.setupServe();
@@ -60,13 +68,6 @@ export class Game {
 
   setOnMatchEnd(cb: (winner: PlayerSide, stats: MatchStats) => void): void {
     this.onMatchEnd = cb;
-  }
-
-  setCenter(x: number, y: number): void {
-    this.centerX = x;
-    this.centerY = y;
-    this.container.x = x;
-    this.container.y = y;
   }
 
   update(dt: number): void {
@@ -78,8 +79,12 @@ export class Game {
       this.accumulator -= fixedDt;
     }
 
-    this.render();
+    this.updateVisuals();
+    this.updateCamera();
+    this.updateHUD();
   }
+
+  // ============= Game state machine =============
 
   private fixedUpdate(dt: number): void {
     switch (this.phase) {
@@ -115,35 +120,88 @@ export class Game {
   }
 
   private updateServing(dt: number): void {
-    // Tick animations for both players even while waiting
     this.playerNear.tickAnimation(dt);
     this.playerFar.tickAnimation(dt);
 
     const isPlayerServing = this.score.state.servingSide === PlayerSide.Near;
 
     if (isPlayerServing) {
-      const playerScreen = worldToScreen(this.playerNear.position.x, this.playerNear.position.y);
-      const input = this.input.getInput(
-        playerScreen.x + this.centerX,
-        playerScreen.y + this.centerY,
-      );
-
-      if (input.shotType !== null && !this.hasServed) {
-        this.hasServed = true;
-        const mouse = this.input.getMousePosition();
-        const worldTarget = screenToWorld(mouse.x - this.centerX, mouse.y - this.centerY);
-        const targetX = worldTarget.x;
-        const targetY = -(COURT.SERVICE_LINE_DIST * 0.3 + input.shotPower * COURT.SERVICE_LINE_DIST * 0.5);
-        this.executeServe(PlayerSide.Near, targetX, targetY, input.shotPower);
-      }
+      this.updatePlayerServe(dt);
     } else {
-      if (!this.hasServed) {
-        this.aiServeDelay -= dt;
-        if (this.aiServeDelay <= 0) {
-          this.hasServed = true;
-          const aiServe = this.ai.getServeTarget(this.isDeuceSide);
-          this.executeServe(PlayerSide.Far, aiServe.targetX, aiServe.targetY, aiServe.power);
+      this.updateAIServe(dt);
+    }
+  }
+
+  private updatePlayerServe(dt: number): void {
+    const input = this.inputManager.update(dt);
+
+    // Detect space press edge (pressed this frame)
+    const spaceDown = this.inputManager.isSpaceHeld() || input.shotRequested;
+    const spaceJustPressed = spaceDown && !this.spaceWasDown;
+    this.spaceWasDown = spaceDown;
+
+    // Update power meter during charging
+    if (this.inputManager.isSpaceHeld()) {
+      this.ui.updatePowerMeter(this.inputManager.getCurrentChargePower(), true);
+    }
+
+    switch (this.servePhase) {
+      case ServePhase.WaitingForToss:
+        if (spaceJustPressed) {
+          // Toss the ball
+          this.ball.state.position = {
+            x: this.playerNear.position.x,
+            y: this.playerNear.position.y,
+            z: 1.5,
+          };
+          this.ball.state.velocity = { x: 0, y: 0, z: INPUT.SERVE_TOSS_SPEED };
+          this.ball.state.inPlay = true;
+          this.servePhase = ServePhase.BallRising;
         }
+        break;
+
+      case ServePhase.BallRising:
+        // Ball rises with gravity
+        this.ball.state.position.z += this.ball.state.velocity.z * dt;
+        this.ball.state.velocity.z -= GAME.GRAVITY * dt;
+
+        if (this.ball.state.velocity.z <= 0) {
+          this.servePhase = ServePhase.WaitingForHit;
+        }
+        break;
+
+      case ServePhase.WaitingForHit:
+        // Ball falls with gravity
+        this.ball.state.position.z += this.ball.state.velocity.z * dt;
+        this.ball.state.velocity.z -= GAME.GRAVITY * dt;
+
+        if (input.shotRequested) {
+          // Hit the serve
+          this.ui.updatePowerMeter(0, false);
+          const aimDir = input.aimDirection;
+          const targetX = aimDir.x * COURT.SINGLES_WIDTH * 0.4;
+          const targetY = -(COURT.SERVICE_LINE_DIST * 0.3 + input.shotPower * COURT.SERVICE_LINE_DIST * 0.5);
+          this.executeServe(PlayerSide.Near, targetX, targetY, input.shotPower);
+          return;
+        }
+
+        // Ball dropped too low → fault
+        if (this.ball.state.position.z < INPUT.SERVE_HIT_MIN_HEIGHT) {
+          this.ui.updatePowerMeter(0, false);
+          this.ball.state.inPlay = false;
+          this.handleFault();
+        }
+        break;
+    }
+  }
+
+  private updateAIServe(dt: number): void {
+    if (!this.hasServed) {
+      this.aiServeDelay -= dt;
+      if (this.aiServeDelay <= 0) {
+        this.hasServed = true;
+        const aiServe = this.ai.getServeTarget(this.isDeuceSide);
+        this.executeServe(PlayerSide.Far, aiServe.targetX, aiServe.targetY, aiServe.power);
       }
     }
   }
@@ -160,6 +218,7 @@ export class Game {
       z: 2.5,
     };
     this.ball.hit(targetX, targetY, speed, 2, side);
+    this.hasServed = true;
     this.phase = GamePhase.Rally;
     this.serveInProgress = true;
     this.serveBounceChecked = false;
@@ -167,17 +226,16 @@ export class Game {
   }
 
   private updateRally(dt: number): void {
-    // Update player (near - human)
-    const playerScreen = worldToScreen(this.playerNear.position.x, this.playerNear.position.y);
-    const playerInput = this.input.getInput(
-      playerScreen.x + this.centerX,
-      playerScreen.y + this.centerY,
-    );
+    // Human player input
+    const playerInput = this.inputManager.update(dt);
+    this.playerNear.update(dt, playerInput);
 
-    const isoInput = { ...playerInput };
-    isoInput.moveX = playerInput.moveX;
-    isoInput.moveY = playerInput.moveY;
-    this.playerNear.update(dt, isoInput);
+    // Show power meter while charging
+    if (playerInput.isCharging) {
+      this.ui.updatePowerMeter(this.inputManager.getCurrentChargePower(), true);
+    } else {
+      this.ui.updatePowerMeter(0, false);
+    }
 
     // AI movement
     const ballApproaching = this.ball.state.velocity.y < 0;
@@ -195,13 +253,11 @@ export class Game {
 
     // Serve landing validation
     if (this.serveInProgress && !this.serveBounceChecked) {
-      // Net hit during serve = fault
       if (this.ball.isNetHit()) {
         this.handleFault();
         return;
       }
 
-      // Check first bounce landing
       if (this.ball.state.bounceCount >= 1) {
         if (this.isServeInBox()) {
           this.serveBounceChecked = true;
@@ -212,24 +268,22 @@ export class Game {
         }
       }
 
-      // Ball went out without valid bounce
       if (this.ball.isOut()) {
         this.handleFault();
         return;
       }
 
-      // During serve flight, receiver can't hit (must let it bounce)
       return;
     }
 
     // Hit detection - player
-    if (playerInput.shotType !== null && this.playerNear.canHit) {
-      this.tryHit(this.playerNear, playerInput.aimAngle, playerInput.shotPower, playerInput.shotType);
+    if (playerInput.shotRequested && this.playerNear.canHit) {
+      this.tryHit(this.playerNear, playerInput.aimDirection, playerInput.shotPower);
     }
 
     // Hit detection - AI
-    if (aiInput.shotType !== null && this.playerFar.canHit) {
-      this.tryHit(this.playerFar, aiInput.aimAngle, aiInput.shotPower, aiInput.shotType);
+    if (aiInput.shotRequested && this.playerFar.canHit) {
+      this.tryHit(this.playerFar, aiInput.aimDirection, aiInput.shotPower);
     }
 
     // Point resolution
@@ -243,17 +297,13 @@ export class Game {
     const servingSide = this.score.state.servingSide;
 
     if (servingSide === PlayerSide.Near) {
-      // Near serves toward -y; must land in far service box: y in [-sl, 0]
       if (pos.y < -sl || pos.y > 0) return false;
       if (Math.abs(pos.x) > hw) return false;
-      // Cross-court: deuce side (+x server) → must land in -x half
       if (this.isDeuceSide && pos.x > 0) return false;
       if (!this.isDeuceSide && pos.x < 0) return false;
     } else {
-      // Far serves toward +y; must land in near service box: y in [0, sl]
       if (pos.y > sl || pos.y < 0) return false;
       if (Math.abs(pos.x) > hw) return false;
-      // Cross-court: deuce side (-x server) → must land in +x half
       if (this.isDeuceSide && pos.x < 0) return false;
       if (!this.isDeuceSide && pos.x > 0) return false;
     }
@@ -264,21 +314,19 @@ export class Game {
   private handleFault(): void {
     this.faultCount++;
     if (this.faultCount >= 2) {
-      // Double fault — point to receiver
       this.lastPointMessage = 'DOUBLE FAULT';
       const receiver = this.score.state.servingSide === PlayerSide.Near
         ? PlayerSide.Far
         : PlayerSide.Near;
       this.endPoint(receiver);
     } else {
-      // First fault — re-serve
       this.lastPointMessage = 'FAULT';
       this.phase = GamePhase.PointOver;
       this.pauseTimer = 1.5;
     }
   }
 
-  private tryHit(player: Player, aimAngle: number, power: number, shotType: ShotType): void {
+  private tryHit(player: Player, aimDirection: Vec2, power: number): void {
     const bp = this.ball.state.position;
     const pp = player.position;
     const dx = bp.x - pp.x;
@@ -291,24 +339,14 @@ export class Game {
     this.rallyHitCount++;
     player.swing();
 
-    const isLob = shotType === ShotType.Lob;
+    const isLob = power > INPUT.LOB_THRESHOLD;
     const speed = isLob ? GAME.BALL_SPEED_LOB : GAME.BALL_SPEED_NORMAL;
     const lobHeight = isLob ? 4 : 1.5;
 
     const direction = player.side === PlayerSide.Near ? -1 : 1;
 
-    // Determine horizontal target from mouse world position (human) or aim angle (AI)
-    let targetX: number;
-    if (player.side === PlayerSide.Near) {
-      const mouse = this.input.getMousePosition();
-      const worldTarget = screenToWorld(mouse.x - this.centerX, mouse.y - this.centerY);
-      targetX = worldTarget.x;
-    } else {
-      targetX = Math.cos(aimAngle) * COURT.SINGLES_WIDTH * 0.4;
-    }
-
-    // Depth: power controls how deep — high power can overshoot the baseline
-    const targetY = direction * (COURT.HALF_LENGTH * 0.3 + power * COURT.HALF_LENGTH * 0.9);
+    const targetX = aimDirection.x * COURT.SINGLES_WIDTH * 0.4;
+    const targetY = direction * (COURT.HALF_LENGTH * 0.3 + power * COURT.HALF_LENGTH * 0.7);
 
     this.ball.hit(targetX, targetY, speed * (0.8 + power * 0.2), lobHeight, player.side);
   }
@@ -323,9 +361,6 @@ export class Game {
       return;
     }
 
-    // Double bounce must be checked BEFORE out — the second bounce may land
-    // past the baseline, but the point was already decided by the receiver
-    // failing to return the ball.
     if (ball.isDoubleBounce()) {
       const landingSide = ball.getLandingSide();
       if (landingSide !== null) {
@@ -350,7 +385,6 @@ export class Game {
       return;
     }
 
-    // Ball fell too far off court
     if (ball.state.position.z < -5) {
       const winner = ball.state.lastHitBy === PlayerSide.Near ? PlayerSide.Far : PlayerSide.Near;
       this.endPoint(winner);
@@ -369,7 +403,6 @@ export class Game {
     const newTotalGames = this.score.state.games[0].reduce((a, b) => a + b, 0) +
                           this.score.state.games[1].reduce((a, b) => a + b, 0);
 
-    // New game started — reset point counter
     if (newTotalGames !== prevTotalGames) {
       this.pointsInCurrentGame = 0;
     }
@@ -378,6 +411,7 @@ export class Game {
     this.serveInProgress = false;
     this.phase = GamePhase.PointOver;
     this.pauseTimer = GAME.POINT_PAUSE_DURATION / 1000;
+    this.ui.updatePowerMeter(0, false);
 
     if (this.score.isMatchOver()) {
       this.phase = GamePhase.MatchOver;
@@ -393,7 +427,6 @@ export class Game {
     this.pauseTimer -= dt;
     if (this.pauseTimer <= 0) {
       if (this.lastPointMessage === 'FAULT') {
-        // Re-serve after first fault (keep faultCount, same side)
         this.lastPointMessage = '';
         this.positionForServe();
         this.phase = GamePhase.Serving;
@@ -410,7 +443,6 @@ export class Game {
     const server = servingSide === PlayerSide.Near ? this.playerNear : this.playerFar;
     const receiver = servingSide === PlayerSide.Near ? this.playerFar : this.playerNear;
 
-    // Server: behind baseline, deuce/ad side
     if (servingSide === PlayerSide.Near) {
       server.position.x = this.isDeuceSide ? 1.5 : -1.5;
       server.position.y = COURT.HALF_LENGTH;
@@ -419,7 +451,6 @@ export class Game {
       server.position.y = -COURT.HALF_LENGTH;
     }
 
-    // Receiver: opposite baseline, positioned to receive
     if (servingSide === PlayerSide.Near) {
       receiver.position.x = this.isDeuceSide ? -1 : 1;
       receiver.position.y = -COURT.HALF_LENGTH + 2;
@@ -428,7 +459,6 @@ export class Game {
       receiver.position.y = COURT.HALF_LENGTH - 2;
     }
 
-    // Ball at server
     this.ball.reset(servingSide);
     this.ball.state.position = {
       x: server.position.x,
@@ -438,11 +468,12 @@ export class Game {
 
     this.hasServed = false;
     this.serveInProgress = false;
+    this.servePhase = ServePhase.WaitingForToss;
+    this.spaceWasDown = false;
     this.aiServeDelay = 1.0 + Math.random() * 0.5;
   }
 
   private setupServe(): void {
-    // Detect new game (points reset)
     if (this.score.state.points[0] === 0 && this.score.state.points[1] === 0
         && !this.score.state.isDeuce) {
       this.pointsInCurrentGame = 0;
@@ -454,204 +485,47 @@ export class Game {
     this.positionForServe();
   }
 
-  private render(): void {
-    this.playerNear.render();
-    this.playerFar.render();
-    this.ball.render();
-    this.renderScore();
-    this.renderAimLine();
+  // ============= Visuals =============
 
-    // Depth sort
-    const ballDepth = this.ball.state.position.x + this.ball.state.position.y;
-    const netDepth = 0;
-
-    this.container.removeChildren();
-    this.container.addChild(this.court.container);
-
-    if (ballDepth < netDepth) {
-      this.container.addChild(this.ball.container);
-    }
-    this.container.addChild(this.playerFar.container);
-    if (ballDepth >= netDepth) {
-      this.container.addChild(this.ball.container);
-    }
-    this.container.addChild(this.playerNear.container);
-    this.container.addChild(this.scoreDisplay);
+  private updateVisuals(): void {
+    this.playerNear.updateVisuals();
+    this.playerFar.updateVisuals();
+    this.ball.updateVisuals();
   }
 
-  private renderAimLine(): void {
-    if (this.phase !== GamePhase.Rally && this.phase !== GamePhase.Serving) return;
+  private updateCamera(): void {
+    // Behind and above the near player, looking at center court
+    const playerZ = this.playerNear.position.y; // game y → three.js z
+    const targetCamZ = playerZ + 12;
+    const targetCamY = 8;
 
-    const playerScreen = worldToScreen(this.playerNear.position.x, this.playerNear.position.y);
-    const mouse = this.input.getMousePosition();
-    const startX = playerScreen.x;
-    const startY = playerScreen.y;
-    const endX = mouse.x - this.centerX;
-    const endY = mouse.y - this.centerY;
+    // Smooth follow
+    this.camera.position.x += (0 - this.camera.position.x) * 0.05;
+    this.camera.position.y += (targetCamY - this.camera.position.y) * 0.05;
+    this.camera.position.z += (targetCamZ - this.camera.position.z) * 0.05;
 
-    const dx = endX - startX;
-    const dy = endY - startY;
-    const dist = Math.sqrt(dx * dx + dy * dy);
-    const power = Math.min(1, dist / 150);
-
-    let color: number;
-    if (power < 0.5) {
-      const t = power / 0.5;
-      const r = Math.floor(0x33 + t * (0xFF - 0x33));
-      const g = Math.floor(0x99 + t * (0xFF - 0x99));
-      const b = Math.floor(0xFF * (1 - t));
-      color = (r << 16) | (g << 8) | b;
-    } else {
-      const t = (power - 0.5) / 0.5;
-      const r = 0xFF;
-      const g = Math.floor(0xFF * (1 - t));
-      const b = 0;
-      color = (r << 16) | (g << 8) | b;
-    }
-
-    const g = new Graphics();
-    g.moveTo(startX, startY);
-    g.lineTo(endX, endY);
-    g.stroke({ width: 2, color, alpha: 0.5 });
-    g.circle(endX, endY, 4 + power * 4);
-    g.fill({ color, alpha: 0.6 });
-
-    this.playerNear.container.addChild(g);
+    this.camera.lookAt(0, 1, 0);
   }
 
-  private renderScore(): void {
-    this.scoreDisplay.removeChildren();
-
+  private updateHUD(): void {
     const display = this.score.getDisplayScore();
     const games = this.score.state.games;
     const servingSide = this.score.state.servingSide;
 
-    const nameStyle = new TextStyle({
-      fontFamily: 'Arial, Helvetica, sans-serif',
-      fontSize: 16,
-      fill: RENDER.COLORS.UI_TEXT,
-      fontWeight: 'bold',
-    });
-
-    const pointStyle = new TextStyle({
-      fontFamily: 'Arial, Helvetica, sans-serif',
-      fontSize: 18,
-      fill: RENDER.COLORS.UI_ACCENT,
-      fontWeight: 'bold',
-    });
-
-    const gamesStyle = new TextStyle({
-      fontFamily: 'Arial, Helvetica, sans-serif',
-      fontSize: 16,
-      fill: RENDER.COLORS.UI_TEXT,
-      fontWeight: 'normal',
-    });
-
-    const baseX = -this.centerX + 20;
-    const baseY = -this.centerY + 16;
-
-    const bg = new Graphics();
-    bg.roundRect(baseX - 10, baseY - 6, 220, 64, 8);
-    bg.fill({ color: RENDER.COLORS.UI_BG, alpha: 0.9 });
-    this.scoreDisplay.addChild(bg);
-
-    const serveNear = servingSide === PlayerSide.Near ? ' \u25B6' : '';
-    const serveFar = servingSide === PlayerSide.Far ? ' \u25B6' : '';
-
-    const youLabel = new Text({ text: `YOU${serveNear}`, style: nameStyle });
-    youLabel.x = baseX;
-    youLabel.y = baseY;
-    this.scoreDisplay.addChild(youLabel);
-
-    const gamesStr0 = games[0].map((g) => g.toString()).join('  ');
-    const youGames = new Text({ text: gamesStr0, style: gamesStyle });
-    youGames.x = baseX + 75;
-    youGames.y = baseY + 1;
-    this.scoreDisplay.addChild(youGames);
-
-    const youPoints = new Text({ text: display.near, style: pointStyle });
-    youPoints.x = baseX + 170;
-    youPoints.y = baseY - 1;
-    this.scoreDisplay.addChild(youPoints);
-
-    const cpuLabel = new Text({ text: `CPU${serveFar}`, style: nameStyle });
-    cpuLabel.x = baseX;
-    cpuLabel.y = baseY + 28;
-    this.scoreDisplay.addChild(cpuLabel);
-
-    const gamesStr1 = games[1].map((g) => g.toString()).join('  ');
-    const cpuGames = new Text({ text: gamesStr1, style: gamesStyle });
-    cpuGames.x = baseX + 75;
-    cpuGames.y = baseY + 29;
-    this.scoreDisplay.addChild(cpuGames);
-
-    const cpuPoints = new Text({ text: display.far, style: pointStyle });
-    cpuPoints.x = baseX + 170;
-    cpuPoints.y = baseY + 27;
-    this.scoreDisplay.addChild(cpuPoints);
-
-    // Center messages (fault, out, deuce, etc.)
-    if (this.phase === GamePhase.PointOver && this.lastPointMessage) {
-      const msgStyle = new TextStyle({
-        fontFamily: 'Arial, Helvetica, sans-serif',
-        fontSize: 28,
-        fill: RENDER.COLORS.UI_ACCENT,
-        fontWeight: 'bold',
-      });
-      const msgText = new Text({ text: this.lastPointMessage, style: msgStyle });
-      msgText.anchor.set(0.5);
-      msgText.x = 0;
-      msgText.y = -80;
-      this.scoreDisplay.addChild(msgText);
-    } else if (this.phase === GamePhase.PointOver) {
-      const msg = this.getPointMessage();
-      if (msg) {
-        const msgStyle = new TextStyle({
-          fontFamily: 'Arial, Helvetica, sans-serif',
-          fontSize: 28,
-          fill: RENDER.COLORS.UI_ACCENT,
-          fontWeight: 'bold',
-        });
-        const msgText = new Text({ text: msg, style: msgStyle });
-        msgText.anchor.set(0.5);
-        msgText.x = 0;
-        msgText.y = -80;
-        this.scoreDisplay.addChild(msgText);
-      }
+    let message = this.lastPointMessage;
+    if (!message && this.phase === GamePhase.PointOver) {
+      message = this.getPointMessage();
     }
 
-    if (this.phase === GamePhase.Countdown) {
-      const countStyle = new TextStyle({
-        fontFamily: 'Arial, Helvetica, sans-serif',
-        fontSize: 32,
-        fill: RENDER.COLORS.UI_ACCENT,
-        fontWeight: 'bold',
-      });
-      const seconds = Math.ceil(this.pauseTimer);
-      const countText = new Text({ text: `${seconds}`, style: countStyle });
-      countText.anchor.set(0.5);
-      countText.x = 0;
-      countText.y = -40;
-      this.scoreDisplay.addChild(countText);
-    }
-
-    if (this.phase === GamePhase.Serving) {
-      const servingStyle = new TextStyle({
-        fontFamily: 'Arial, Helvetica, sans-serif',
-        fontSize: 16,
-        fill: 0xCCCCCC,
-      });
-      const isPlayer = this.score.state.servingSide === PlayerSide.Near;
-      const faultLabel = this.faultCount === 1 ? ' (2nd serve)' : '';
-      const serveText = new Text({
-        text: isPlayer ? `Click to serve${faultLabel}` : 'Opponent serving...',
-        style: servingStyle,
-      });
-      serveText.anchor.set(0.5);
-      serveText.x = 0;
-      serveText.y = 100;
-      this.scoreDisplay.addChild(serveText);
-    }
+    this.ui.updateHUD(
+      display,
+      games,
+      servingSide,
+      this.phase,
+      message,
+      this.faultCount,
+      this.pauseTimer,
+    );
   }
 
   private getPointMessage(): string {
@@ -660,5 +534,13 @@ export class Game {
       return this.score.state.advantage === PlayerSide.Near ? 'ADVANTAGE YOU' : 'ADVANTAGE CPU';
     }
     return '';
+  }
+
+  destroy(): void {
+    // Remove meshes from scene
+    this.scene.remove(this.court.group);
+    this.scene.remove(this.playerNear.group);
+    this.scene.remove(this.playerFar.group);
+    this.scene.remove(this.ball.mesh);
   }
 }

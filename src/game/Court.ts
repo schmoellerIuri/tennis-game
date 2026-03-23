@@ -1,118 +1,118 @@
-import { Container, Graphics } from 'pixi.js';
-import { COURT, RENDER } from '@/utils/Constants';
-import { worldToScreen } from '@/utils/IsometricUtils';
-import { Vec2 } from '@/types';
+import * as THREE from 'three';
+import { COURT, RENDER_3D } from '@/utils/Constants';
 
 export class Court {
-  readonly container = new Container();
+  readonly group: THREE.Group;
 
-  constructor() {
-    this.draw();
+  constructor(scene: THREE.Scene) {
+    this.group = new THREE.Group();
+    this.buildSurface();
+    this.buildLines();
+    this.buildNet();
+    scene.add(this.group);
   }
 
-  private draw(): void {
-    this.drawSurface();
-    this.drawLines();
-    this.drawNet();
-  }
-
-  private worldPoint(x: number, y: number): Vec2 {
-    return worldToScreen(x, y);
-  }
-
-  private drawSurface(): void {
-    const g = new Graphics();
+  private buildSurface(): void {
     const hw = COURT.SINGLES_WIDTH / 2;
     const hl = COURT.HALF_LENGTH;
-    const margin = 7;
+    const margin = 5;
 
-    // Outer clay (run-off area)
-    const otl = this.worldPoint(-hw - margin, -hl - margin);
-    const otr = this.worldPoint(hw + margin, -hl - margin);
-    const obr = this.worldPoint(hw + margin, hl + margin);
-    const obl = this.worldPoint(-hw - margin, hl + margin);
-    g.poly([otl.x, otl.y, otr.x, otr.y, obr.x, obr.y, obl.x, obl.y]);
-    g.fill(RENDER.COLORS.CLAY);
+    // Surround (green area)
+    const surroundGeo = new THREE.PlaneGeometry(
+      (hw + margin) * 2,
+      (hl + margin) * 2,
+    );
+    const surroundMat = new THREE.MeshLambertMaterial({ color: RENDER_3D.COLORS.SURROUND });
+    const surround = new THREE.Mesh(surroundGeo, surroundMat);
+    surround.rotation.x = -Math.PI / 2;
+    surround.position.y = -0.01;
+    surround.receiveShadow = true;
+    this.group.add(surround);
 
-    // Inner court surface (lighter)
-    const itl = this.worldPoint(-hw, -hl);
-    const itr = this.worldPoint(hw, -hl);
-    const ibr = this.worldPoint(hw, hl);
-    const ibl = this.worldPoint(-hw, hl);
-    g.poly([itl.x, itl.y, itr.x, itr.y, ibr.x, ibr.y, ibl.x, ibl.y]);
-    g.fill(RENDER.COLORS.CLAY_LIGHT);
-
-    this.container.addChild(g);
+    // Court surface (clay)
+    const courtGeo = new THREE.PlaneGeometry(hw * 2, hl * 2);
+    const courtMat = new THREE.MeshLambertMaterial({ color: RENDER_3D.COLORS.CLAY_LIGHT });
+    const court = new THREE.Mesh(courtGeo, courtMat);
+    court.rotation.x = -Math.PI / 2;
+    court.position.y = 0;
+    court.receiveShadow = true;
+    this.group.add(court);
   }
 
-  private drawLines(): void {
-    const g = new Graphics();
+  private buildLines(): void {
     const hw = COURT.SINGLES_WIDTH / 2;
     const hl = COURT.HALF_LENGTH;
     const sl = COURT.SERVICE_LINE_DIST;
-    const lineWidth = 2;
+    const lineY = 0.01; // Slightly above court to avoid z-fighting
 
-    const drawLine = (x1: number, y1: number, x2: number, y2: number) => {
-      const p1 = this.worldPoint(x1, y1);
-      const p2 = this.worldPoint(x2, y2);
-      g.moveTo(p1.x, p1.y);
-      g.lineTo(p2.x, p2.y);
-      g.stroke({ width: lineWidth, color: RENDER.COLORS.COURT_LINE });
+    const lineMat = new THREE.LineBasicMaterial({ color: RENDER_3D.COLORS.COURT_LINE });
+
+    const addLine = (x1: number, z1: number, x2: number, z2: number) => {
+      const points = [
+        new THREE.Vector3(x1, lineY, z1),
+        new THREE.Vector3(x2, lineY, z2),
+      ];
+      const geo = new THREE.BufferGeometry().setFromPoints(points);
+      this.group.add(new THREE.Line(geo, lineMat));
     };
 
     // Baselines
-    drawLine(-hw, -hl, hw, -hl);
-    drawLine(-hw, hl, hw, hl);
+    addLine(-hw, -hl, hw, -hl);
+    addLine(-hw, hl, hw, hl);
 
     // Sidelines
-    drawLine(-hw, -hl, -hw, hl);
-    drawLine(hw, -hl, hw, hl);
+    addLine(-hw, -hl, -hw, hl);
+    addLine(hw, -hl, hw, hl);
 
     // Service lines
-    drawLine(-hw, -sl, hw, -sl);
-    drawLine(-hw, sl, hw, sl);
+    addLine(-hw, -sl, hw, -sl);
+    addLine(-hw, sl, hw, sl);
 
     // Center service line
-    drawLine(0, -sl, 0, sl);
+    addLine(0, -sl, 0, sl);
 
     // Center marks
-    drawLine(0, -hl, 0, -hl + 0.5);
-    drawLine(0, hl, 0, hl - 0.5);
-
-    this.container.addChild(g);
+    addLine(0, -hl, 0, -hl + 0.5);
+    addLine(0, hl, 0, hl - 0.5);
   }
 
-  private drawNet(): void {
-    const g = new Graphics();
+  private buildNet(): void {
     const hw = COURT.SINGLES_WIDTH / 2 + 0.5;
-    const netY = 0;
-    const netHeight = COURT.NET_HEIGHT;
+    const netH = COURT.NET_HEIGHT;
 
-    const leftBase = this.worldPoint(-hw, netY);
-    const rightBase = this.worldPoint(hw, netY);
-    const leftTop = worldToScreen(-hw, netY);
-    const rightTop = worldToScreen(hw, netY);
+    // Net mesh (semi-transparent plane)
+    const netGeo = new THREE.PlaneGeometry(hw * 2, netH);
+    const netMat = new THREE.MeshLambertMaterial({
+      color: RENDER_3D.COLORS.NET,
+      transparent: true,
+      opacity: 0.5,
+      side: THREE.DoubleSide,
+    });
+    const net = new THREE.Mesh(netGeo, netMat);
+    net.position.set(0, netH / 2, 0);
+    this.group.add(net);
 
-    leftTop.y -= netHeight * RENDER.COURT_SCALE * 0.8;
-    rightTop.y -= netHeight * RENDER.COURT_SCALE * 0.8;
+    // Net top line (white cord)
+    const cordMat = new THREE.LineBasicMaterial({ color: 0xFFFFFF });
+    const cordPoints = [
+      new THREE.Vector3(-hw, netH, 0),
+      new THREE.Vector3(hw, netH, 0),
+    ];
+    const cordGeo = new THREE.BufferGeometry().setFromPoints(cordPoints);
+    this.group.add(new THREE.Line(cordGeo, cordMat));
 
-    // Net mesh
-    g.poly([leftBase.x, leftBase.y, rightBase.x, rightBase.y, rightTop.x, rightTop.y, leftTop.x, leftTop.y]);
-    g.fill({ color: RENDER.COLORS.NET, alpha: 0.4 });
-    g.stroke({ width: 1, color: RENDER.COLORS.NET });
+    // Net posts
+    const postGeo = new THREE.CylinderGeometry(0.04, 0.04, netH + 0.1, 8);
+    const postMat = new THREE.MeshLambertMaterial({ color: RENDER_3D.COLORS.NET_POST });
 
-    // Net top line
-    g.moveTo(leftTop.x, leftTop.y);
-    g.lineTo(rightTop.x, rightTop.y);
-    g.stroke({ width: 2, color: RENDER.COLORS.NET });
+    const leftPost = new THREE.Mesh(postGeo, postMat);
+    leftPost.position.set(-hw, (netH + 0.1) / 2, 0);
+    leftPost.castShadow = true;
+    this.group.add(leftPost);
 
-    // Posts
-    const postWidth = 3;
-    g.rect(leftBase.x - postWidth / 2, leftTop.y, postWidth, leftBase.y - leftTop.y);
-    g.fill(RENDER.COLORS.NET_POST);
-    g.rect(rightBase.x - postWidth / 2, rightTop.y, postWidth, rightBase.y - rightTop.y);
-    g.fill(RENDER.COLORS.NET_POST);
-
-    this.container.addChild(g);
+    const rightPost = new THREE.Mesh(postGeo, postMat);
+    rightPost.position.set(hw, (netH + 0.1) / 2, 0);
+    rightPost.castShadow = true;
+    this.group.add(rightPost);
   }
 }
