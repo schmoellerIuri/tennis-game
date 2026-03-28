@@ -2,20 +2,25 @@
 
 ## 1. Overview
 
-A browser-based 2.5D isometric tennis game with arcade-style mechanics and flat/vector art. The game launches as a single-player experience against AI opponents, with a clear path to real-time multiplayer in a later phase.
+A browser-based 3D arcade tennis game with a broadcast-style camera view from above and behind the court. Players control a character with 3D models on a full 3D court. The game launches as a single-player experience against AI opponents, with a clear path to real-time multiplayer in a later phase.
+
+**Reference:** [Free Tennis](https://freetennis.org/) — a 3D tennis game with an above-court camera, arcade controls, and keyboard-driven gameplay.
 
 ## 2. Goals
 
-- Deliver a fun, accessible tennis game that runs in any modern browser
+- Deliver a fun, accessible 3D tennis game that runs in any modern browser
+- Use a physics engine for realistic ball behavior, bouncing, and collision detection
+- Low-poly arcade art style — visually appealing without requiring AAA assets
 - Keep the architecture simple for phase 1 while ensuring multiplayer can be added without a rewrite
-- Target desktop browsers with keyboard + mouse input
+- Target desktop browsers with keyboard input
 
 ## 3. Non-Goals (Phase 1)
 
 - Multiplayer networking
 - User accounts, persistence, or leaderboards
 - Mobile/touch support
-- Realistic physics simulation
+- Photorealistic graphics or PBR materials
+- Motion-captured animations
 
 ---
 
@@ -23,44 +28,74 @@ A browser-based 2.5D isometric tennis game with arcade-style mechanics and flat/
 
 ### 4.1 Perspective & Camera
 
-- **View:** 2.5D isometric, fixed camera showing the entire court
-- **No camera movement** — the full court is always visible
-- **Resolution:** Responsive canvas that scales to fit the browser window while maintaining aspect ratio
+- **View:** 3D, positioned above and behind the player's baseline — similar to a TV broadcast angle
+- **Camera behavior:** Semi-fixed — follows the ball laterally with gentle smoothing, slight zoom adjustments during serves and rallies
+- **Default angle:** ~30-40 degrees from horizontal, looking down the length of the court
+- **Alternative view (toggle):** Side-on broadcast view for variety
+- **Resolution:** Responsive WebGL canvas that scales to fit the browser window while maintaining aspect ratio
 
 ### 4.2 Art Style
 
-- **Flat/vector aesthetic** — clean geometric shapes, minimal detail
-- Court, players, ball, and net rendered programmatically (no external sprite assets required)
-- Color palette: grass green court, white lines, distinct player colors
-- Shadows and depth cues to sell the isometric perspective
+- **Low-poly arcade aesthetic** — stylized 3D models with flat or cel-shaded materials
+- **3D Models (GLTF/GLB format):**
+  - **Players:** Low-poly humanoid characters (~500-1500 triangles) with skeletal animations
+  - **Racket:** Simple 3D racket model attached to the player's hand bone
+  - **Ball:** Sphere with tennis ball texture/color (yellow-green)
+- **Court:** 3D geometry with clay surface texture, white line markings, and surrounding area
+- **Net:** Simple mesh with slight transparency/alpha for the net pattern
+- **Color palette:** Clay orange court, white lines, distinct player outfit colors (e.g. player = blue, opponent = red)
+- **Lighting:** Single directional light (sun) + ambient light, real-time shadows for players and ball
+- **Particle effects:** Dust puffs on ball bounce (clay court), hit spark on racket contact
 
-### 4.3 Mechanics (Arcade / Simplified)
+### 4.3 Player Animations
 
-- **Movement:** Player moves along their half of the court using keyboard (WASD or arrow keys)
-- **Shots:** Mouse controls aim direction and shot type
-  - Left click: normal shot (direction follows mouse position relative to player)
-  - Right click: lob shot (higher arc, slower)
-  - Hold duration or mouse distance from player determines power
-- **Ball physics:** Simple parabolic trajectories, no spin or wind
-- **Serving:** Automated toss, player controls direction and power
+All animations are stored in the GLTF model and triggered by game state:
+
+| Animation | Trigger |
+|---|---|
+| Idle | Default stance when not moving |
+| Run | Moving to reach the ball |
+| Forehand swing | Hitting a ball on the dominant side |
+| Backhand swing | Hitting a ball on the non-dominant side |
+| Serve toss + hit | During serve sequence |
+| Celebration | Winning a point |
+| Ready position | Awaiting serve |
+
+### 4.4 Mechanics (Arcade / Simplified)
+
+- **Movement:** Player moves along their half of the court using keyboard (WASD or arrow keys). Movement is 3D but constrained to the ground plane.
+- **Shots:** Single-button shot system
+  - **Space bar:** Swing the racket. Press space when the ball is in range to hit it back.
+  - **Shot direction:** Determined by player position relative to center court + movement direction at time of swing. Moving left while hitting aims the ball left, standing still aims roughly toward the center of the opponent's court.
+  - **Shot type:** Automatically chosen based on timing and distance — early/close hits produce flat shots, late/far hits produce lobs. This keeps controls simple while still creating variety.
+- **Ball physics (Rapier3D):**
+  - Gravity, bounce restitution based on court surface
+  - Ball-court collision for bounce detection and out-of-bounds
+  - Ball-net collision for net faults and let calls
+  - Ball-racket collision zone (simplified — triggered when player is in range and presses space)
+- **Serving:**
+  - Space bar starts the toss, press space again to hit — timing determines serve quality
+  - Direction influenced by holding a movement key (left/right) during the toss
 - **Scoring:** Standard tennis scoring (15-30-40-deuce-advantage), configurable match length (1 set, 3 sets, etc.)
-- **Court boundaries:** Ball landing outside lines = out, net hits = let/fault
+- **Court boundaries:** Ball landing outside lines = out (physics-based detection using court boundary colliders)
 
-### 4.4 AI Opponent
+### 4.5 AI Opponent
 
 - **Difficulty levels:** Easy, Medium, Hard
-- Easy: slow reaction, random shot placement
-- Medium: moderate tracking, targets open court sometimes
-- Hard: fast reaction, strategic placement, adapts to player patterns
-- AI decision-making: simple state machine (idle → move to ball → swing → return to position)
+- Easy: slow reaction, random shot placement, frequent mistiming
+- Medium: moderate tracking, targets open court sometimes, decent timing
+- Hard: fast reaction, strategic placement, rarely mistimes, adapts to player patterns
+- AI decision-making: simple state machine (idle → move to ball → position for swing → swing → return to ready position)
+- AI difficulty affects: movement speed, reaction delay, shot accuracy, shot selection intelligence
 
-### 4.5 Game Flow
+### 4.6 Game Flow
 
 1. **Main Menu** — Start match, select difficulty, settings
-2. **Match** — Gameplay with score overlay
-3. **Point Transition** — Brief pause between points showing score
-4. **Match End** — Results screen with stats (aces, winners, errors)
-5. **Return to Menu**
+2. **Match** — Gameplay with 3D HUD overlay (score, set, game)
+3. **Point Transition** — Brief pause between points, camera may show replay angle
+4. **Changeover** — Players switch sides every 2 games (visual transition)
+5. **Match End** — Results screen with stats (aces, winners, unforced errors, rallies)
+6. **Return to Menu**
 
 ---
 
@@ -71,40 +106,62 @@ A browser-based 2.5D isometric tennis game with arcade-style mechanics and flat/
 | Component | Technology |
 |---|---|
 | Language | TypeScript |
-| Renderer | PixiJS (WebGL-accelerated 2D) |
+| 3D Engine | Three.js |
+| Physics | Rapier3D (`@dimforge/rapier3d-compat`) |
+| Model format | GLTF / GLB |
 | Build tool | Vite |
 | Package manager | npm |
+
+**Why Three.js + Rapier3D:**
+- Three.js is the most widely used WebGL library with the largest ecosystem, extensive documentation, and community support
+- Rapier3D is a high-performance physics engine written in Rust, compiled to WASM — fast enough for real-time game physics in the browser
+- `@dimforge/rapier3d-compat` provides a clean JS API with no async WASM initialization hassles
+- GLTF model loading is first-class in Three.js via `GLTFLoader`
+- Skeletal animation support via Three.js `AnimationMixer`
 
 ### 5.2 Project Structure
 
 ```
 tennis-game/
 ├── src/
-│   ├── main.ts              # Entry point, game bootstrap
-│   ├── game/
-│   │   ├── Game.ts           # Main game loop, state management
-│   │   ├── Court.ts          # Court rendering (isometric projection)
-│   │   ├── Player.ts         # Player entity, movement, animations
-│   │   ├── Ball.ts           # Ball entity, trajectory, physics
-│   │   ├── Net.ts            # Net rendering
-│   │   └── Score.ts          # Scoring logic and display
+│   ├── main.ts                # Entry point, game bootstrap
+│   ├── core/
+│   │   ├── Game.ts            # Main game loop, state management
+│   │   ├── SceneManager.ts    # Three.js scene, renderer, camera setup
+│   │   └── PhysicsWorld.ts    # Rapier3D world initialization and step
+│   ├── entities/
+│   │   ├── Player.ts          # Player entity: model, animations, movement
+│   │   ├── Ball.ts            # Ball entity: model, physics body, trail
+│   │   ├── Court.ts           # Court geometry, textures, line markings
+│   │   ├── Net.ts             # Net mesh and collider
+│   │   └── Racket.ts          # Racket model, attached to player hand
+│   ├── systems/
+│   │   ├── PhysicsSystem.ts   # Sync Rapier bodies ↔ Three.js meshes
+│   │   ├── AnimationSystem.ts # Manage skeletal animations and transitions
+│   │   ├── ShotSystem.ts      # Shot mechanics: type, direction, power calc
+│   │   ├── ServeSystem.ts     # Serve sequence: toss, timing, execution
+│   │   ├── ScoringSystem.ts   # Tennis scoring rules, match state
+│   │   └── CameraSystem.ts    # Camera follow, smoothing, transitions
 │   ├── ai/
-│   │   └── AIController.ts   # AI opponent logic
+│   │   └── AIController.ts    # AI opponent: state machine, difficulty
 │   ├── input/
-│   │   └── InputManager.ts   # Keyboard + mouse input handling
-│   ├── physics/
-│   │   └── Physics.ts        # Ball trajectories, collision detection
-│   ├── scenes/
-│   │   ├── MenuScene.ts      # Main menu
-│   │   ├── MatchScene.ts     # Gameplay scene
-│   │   └── ResultScene.ts    # Post-match results
+│   │   └── InputManager.ts    # Keyboard input handling, command abstraction
+│   ├── ui/
+│   │   ├── HUD.ts             # In-game score overlay (HTML/CSS or canvas)
+│   │   ├── MenuScreen.ts      # Main menu UI
+│   │   └── ResultScreen.ts    # Post-match results UI
 │   ├── utils/
-│   │   ├── IsometricUtils.ts # 2D ↔ isometric coordinate transforms
-│   │   └── Constants.ts      # Game constants (court dimensions, speeds, etc.)
+│   │   └── Constants.ts       # Game constants (court dims, physics params, etc.)
+│   ├── assets/
+│   │   └── AssetLoader.ts     # Centralized GLTF/texture loading with progress
 │   └── types/
-│       └── index.ts          # Shared TypeScript types
+│       └── index.ts           # Shared TypeScript types and interfaces
 ├── public/
-│   └── index.html
+│   ├── index.html
+│   └── models/                # GLTF/GLB model files
+│       ├── player.glb
+│       ├── racket.glb
+│       └── ball.glb
 ├── package.json
 ├── tsconfig.json
 ├── vite.config.ts
@@ -113,26 +170,40 @@ tennis-game/
 
 ### 5.3 Game Loop
 
-- **Fixed timestep** game logic at 60 ticks/second (16.67ms)
+- **Fixed timestep** physics and game logic at 60 ticks/second (16.67ms)
 - **Variable framerate** rendering via `requestAnimationFrame`
-- Separation of update logic and render logic to prepare for deterministic multiplayer later
-- PixiJS `Ticker` for render loop, custom accumulator for fixed-step updates
+- Each frame: accumulate delta time → run fixed-step updates → interpolate for render → render scene
+- Rapier3D `world.step()` called at fixed rate for deterministic physics
+- Three.js `AnimationMixer.update(delta)` for smooth skeletal animations
+- Separation of game logic (systems) from rendering to prepare for deterministic multiplayer later
 
-### 5.4 Isometric Projection
+### 5.4 Physics Setup (Rapier3D)
 
-- Game logic operates in 2D world coordinates (top-down court)
-- Isometric transform applied at render time only
-- Transform: `screenX = (worldX - worldY) * tileWidth / 2` and `screenY = (worldX + worldY) * tileHeight / 2`
-- Mouse input reverse-transformed from screen → world coordinates for aiming
+- **Gravity:** `{ x: 0, y: -9.81, z: 0 }`
+- **Ball:** Dynamic rigid body (sphere collider, ~0.033m radius), with restitution ~0.75 for realistic bounce
+- **Court ground:** Fixed rigid body (box collider), positioned at y=0
+- **Net:** Fixed rigid body (thin box collider), centered at the net line
+- **Court boundaries:** Sensor colliders (invisible) placed at the court lines — trigger events when the ball crosses out of bounds
+- **Racket hit zone:** Not a continuous physics collider — instead, a proximity check: when the ball is within striking distance and the player swings, apply an impulse to the ball based on shot type and aim direction
+- **Collision events:** Rapier's event system detects ball-court, ball-net, and ball-out-of-bounds contacts
 
-### 5.5 Key Design Decisions for Multiplayer Readiness
+### 5.5 3D Model Pipeline
+
+- Models created in Blender (or sourced from free low-poly asset packs)
+- Exported as `.glb` (binary GLTF) for compact file size
+- Player model includes armature with bone names matching animation clips
+- Animations can be embedded in the GLB or loaded separately
+- Three.js `GLTFLoader` handles loading; `AnimationMixer` handles playback
+- Racket attached to the player's hand bone via `bone.add(racketMesh)`
+
+### 5.6 Key Design Decisions for Multiplayer Readiness
 
 Even though phase 1 is single-player, the architecture should support multiplayer later:
 
-- **Deterministic game logic:** Game state updates are pure functions of inputs + current state
-- **Input abstraction:** `InputManager` produces input commands (move direction, shot type, aim angle) — AI and human players both produce the same command format
-- **State serialization:** Game state (positions, ball trajectory, score) is serializable to JSON for future network sync
-- **No render-coupled logic:** Game rules never depend on rendering state
+- **Deterministic game logic:** Game state updates are pure functions of inputs + current state. Rapier3D is deterministic given the same inputs.
+- **Input abstraction:** `InputManager` produces input commands (move direction, shot type) — AI and human players both produce the same command format
+- **State serialization:** Game state (positions, velocities, ball state, score) is serializable to JSON for future network sync
+- **No render-coupled logic:** Game rules never depend on rendering state — physics and scoring run independently of Three.js
 
 ---
 
@@ -186,9 +257,10 @@ At small scale, a single EC2 instance handles everything:
 
 | Metric | Target |
 |---|---|
-| Client FPS | 60 fps on integrated GPU |
-| Bundle size | < 500KB gzipped (incl. PixiJS) |
-| Time to interactive | < 2 seconds on 4G |
+| Client FPS | 60 fps on integrated GPU (low-poly scene) |
+| Bundle size | < 2MB gzipped (incl. Three.js + Rapier WASM + models) |
+| Model budget | < 5K triangles per character, < 20K total scene |
+| Time to interactive | < 4 seconds on 4G (WASM + model loading) |
 | Input latency (local) | < 16ms (1 frame) |
 | Network latency (phase 2) | Playable up to 150ms RTT |
 
@@ -198,15 +270,17 @@ At small scale, a single EC2 instance handles everything:
 
 ### Phase 1 — Single-Player MVP
 
-1. Project setup (Vite + TypeScript + PixiJS)
-2. Isometric court rendering
-3. Player movement and input handling
-4. Ball physics and trajectory system
-5. Basic AI opponent
-6. Scoring system and match flow
-7. Menu and results screens
-8. Polish: animations, sound effects, visual feedback
-9. Deploy to Cloudflare Pages
+1. Project setup (Vite + TypeScript + Three.js + Rapier3D)
+2. 3D court rendering with camera system
+3. Physics world setup (ground, net, boundaries)
+4. Player 3D model loading and basic movement
+5. Ball physics (serve, rally, bounce, out-of-bounds)
+6. Shot system (flat, topspin, lob) with keyboard controls
+7. Basic AI opponent
+8. Scoring system and match flow
+9. HUD and menu screens
+10. Animations and visual polish (dust particles, shadows, camera smoothing)
+11. Deploy to Cloudflare Pages
 
 ### Phase 2 — Multiplayer
 
@@ -225,13 +299,25 @@ At small scale, a single EC2 instance handles everything:
 4. Spectator mode
 5. Mobile touch controls
 6. Regional server distribution
+7. Additional court surfaces (grass, hard) with visual and physics differences
+8. Character customization (outfits, rackets)
 
 ---
 
-## 9. Open Questions
+## 9. Resolved Questions
 
-- Should the AI difficulty also affect serve speed, or only positioning/strategy? - Only Position and strategy
-- Do we want sound effects from day one, or add them as polish later? Add them as polish later
-- Should the court surface be configurable (grass/clay/hard) with visual-only differences, or skip that for MVP? Only clay for now
-- What's the minimum viable animation for player characters? (simple shape rotation vs. multi-frame sprites) multi-frame sprites
-claude --resume 834f214a-e640-4a8a-b3e5-54a59444dd6e
+- **AI difficulty vs serve speed:** AI difficulty affects positioning and strategy only, not serve speed
+- **Sound effects:** Add as polish later, not in initial MVP
+- **Court surface:** Clay court only for MVP
+- **Player animations:** Full skeletal animations via GLTF (idle, run, forehand, backhand, serve)
+- **Camera style:** Broadcast-style above-and-behind view (like Free Tennis / TV coverage)
+- **Controls:** Keyboard-only — WASD to move, space bar to swing. Shot direction derived from player position and movement
+
+## 10. Open Questions
+
+- What free/open-source low-poly character models should we use, or should we create custom ones in Blender?
+- Should the timing indicator for shots/serves be a visual element (e.g. a circle that shrinks) or purely feel-based?
+- Do we want ball trails / motion blur for visual feedback on fast shots?
+- Should changeovers (switching sides) be animated or a quick cut?
+
+claude --resume 937b4437-f3c4-4a65-9dfd-aea068c4f658
